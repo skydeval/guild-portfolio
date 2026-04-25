@@ -373,12 +373,12 @@
         <button type="submit">Add</button>
         <button type="button" id="form-cancel">Cancel</button>
       </div>
-      <div class="error" id="error-message" role="alert" aria-live="assertive"></div>
+      <div class="error" id="error-message" role="alert"></div>
     </form>
 
-    <div class="filter-row" role="search">
+    <div class="filter-row">
       <div class="filter-tags" id="filter-tags" role="group" aria-label="Filter by tag"></div>
-      <div class="search-wrapper">
+      <div class="search-wrapper" role="search">
         <label for="search-input" class="visually-hidden">Search bookmarks</label>
         <input type="text" class="search-input" id="search-input"
                placeholder="Search…" aria-label="Search bookmarks">
@@ -387,12 +387,16 @@
       </div>
     </div>
 
-    <ul class="bookmark-list" id="bookmark-list" aria-live="polite" aria-label="Bookmarks"></ul>
+    <ul class="bookmark-list" id="bookmark-list" aria-label="Bookmarks"></ul>
   </main>
 
   <script>
-    const STORAGE_KEY = 'bookmarks';
+    const STORAGE_KEY = 'bookmark-manager:bookmarks';
+    const LEGACY_STORAGE_KEY = 'bookmarks';
     let editingId = null;
+    // After exiting edit mode, restore focus to the bookmark's Edit button so
+    // keyboard users don't lose their place.
+    let pendingEditFocusId = null;
     let activeTag = null;
     let searchQuery = '';
 
@@ -401,7 +405,9 @@
         && typeof b.id === 'string' && b.id.length > 0
         && typeof b.url === 'string' && b.url.length > 0
         && typeof b.title === 'string' && b.title.length > 0
-        && typeof b.createdAt === 'number';
+        && typeof b.createdAt === 'number'
+        && Number.isFinite(b.createdAt)
+        && b.createdAt >= 0;
     }
 
     function normalizeBookmark(b) {
@@ -425,6 +431,17 @@
     }
 
     function loadBookmarks() {
+      // One-time migration from the old 'bookmarks' key to the namespaced key.
+      // If the new key is empty but legacy data exists, copy it forward.
+      if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(LEGACY_STORAGE_KEY)) {
+        try {
+          localStorage.setItem(STORAGE_KEY, localStorage.getItem(LEGACY_STORAGE_KEY));
+          localStorage.removeItem(LEGACY_STORAGE_KEY);
+        } catch (e) {
+          console.warn('Could not migrate legacy bookmarks key:', e);
+        }
+      }
+
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
       try {
@@ -571,6 +588,7 @@
 
       const editBtn = document.createElement('button');
       editBtn.className = 'icon-button';
+      editBtn.dataset.editFor = bookmark.id;
       editBtn.innerHTML = '<span aria-hidden="true">✎</span> Edit';
       editBtn.setAttribute('aria-label', `Edit bookmark: ${bookmark.title}`);
       editBtn.addEventListener('click', () => {
@@ -592,30 +610,66 @@
     function renderEditMode(bookmark, li) {
       const form = document.createElement('form');
       form.className = 'edit-form';
+      const idSuffix = bookmark.id;
+
+      // If a snapshot exists for this bookmark, use it to restore in-progress
+      // field values (preserving user input across renders triggered by search
+      // typing, tag clicks, etc.). Otherwise fall back to stored values.
+      const useSnapshot = editFormSnapshot && editFormSnapshot.id === bookmark.id;
+      const initialUrl = useSnapshot ? editFormSnapshot.url : bookmark.url;
+      const initialTitle = useSnapshot ? editFormSnapshot.title : bookmark.title;
+      const initialNote = useSnapshot ? editFormSnapshot.note : (bookmark.note || '');
+      const initialTags = useSnapshot ? editFormSnapshot.tags : (bookmark.tags || []).join(', ');
+      // Consume the snapshot so it doesn't persist beyond this render.
+      if (useSnapshot) editFormSnapshot = null;
+
+      const urlLabel = document.createElement('label');
+      urlLabel.htmlFor = `edit-url-${idSuffix}`;
+      urlLabel.textContent = 'URL';
+      form.appendChild(urlLabel);
 
       const urlField = document.createElement('input');
       urlField.type = 'text';
-      urlField.value = bookmark.url;
+      urlField.id = `edit-url-${idSuffix}`;
+      urlField.value = initialUrl;
       urlField.placeholder = 'https://example.com';
       urlField.maxLength = 2048;
       form.appendChild(urlField);
 
+      const titleLabel = document.createElement('label');
+      titleLabel.htmlFor = `edit-title-${idSuffix}`;
+      titleLabel.textContent = 'Title';
+      form.appendChild(titleLabel);
+
       const titleField = document.createElement('input');
       titleField.type = 'text';
-      titleField.value = bookmark.title;
+      titleField.id = `edit-title-${idSuffix}`;
+      titleField.value = initialTitle;
       titleField.placeholder = 'Title';
       titleField.maxLength = 200;
       form.appendChild(titleField);
 
+      const noteLabel = document.createElement('label');
+      noteLabel.htmlFor = `edit-note-${idSuffix}`;
+      noteLabel.innerHTML = 'Note <span class="hint">(optional)</span>';
+      form.appendChild(noteLabel);
+
       const noteField = document.createElement('textarea');
-      noteField.value = bookmark.note || '';
+      noteField.id = `edit-note-${idSuffix}`;
+      noteField.value = initialNote;
       noteField.placeholder = 'A short description';
       noteField.maxLength = 1000;
       form.appendChild(noteField);
 
+      const tagsLabel = document.createElement('label');
+      tagsLabel.htmlFor = `edit-tags-${idSuffix}`;
+      tagsLabel.innerHTML = 'Tags <span class="hint">(optional, comma-separated)</span>';
+      form.appendChild(tagsLabel);
+
       const tagsField = document.createElement('input');
       tagsField.type = 'text';
-      tagsField.value = (bookmark.tags || []).join(', ');
+      tagsField.id = `edit-tags-${idSuffix}`;
+      tagsField.value = initialTags;
       tagsField.placeholder = 'Tags, comma-separated';
       tagsField.maxLength = 200;
       form.appendChild(tagsField);
@@ -623,7 +677,6 @@
       const errorDiv = document.createElement('div');
       errorDiv.className = 'error';
       errorDiv.setAttribute('role', 'alert');
-      errorDiv.setAttribute('aria-live', 'assertive');
       form.appendChild(errorDiv);
 
       const actions = document.createElement('div');
@@ -640,6 +693,7 @@
       cancelBtn.className = 'icon-button';
       cancelBtn.textContent = 'Cancel';
       cancelBtn.addEventListener('click', () => {
+        pendingEditFocusId = bookmark.id;
         editingId = null;
         render();
       });
@@ -673,6 +727,7 @@
           errorDiv.textContent = 'Could not save changes. Storage may be full.';
           return;
         }
+        pendingEditFocusId = bookmark.id;
         editingId = null;
         render();
       });
@@ -714,14 +769,41 @@
         btn.textContent = tag;
         btn.setAttribute('aria-pressed', activeTag === tag ? 'true' : 'false');
         btn.addEventListener('click', () => {
-          activeTag = tag;
+          // Click the active tag again to toggle it off (back to "All").
+          activeTag = (activeTag === tag) ? null : tag;
           render();
         });
         filterRow.appendChild(btn);
       }
     }
 
+    // Snapshot of in-progress edit form field values, used to preserve
+    // user input across renders that aren't initiated by the edit form itself
+    // (e.g. typing in search while in edit mode). Set at the top of render(),
+    // consumed by renderEditMode().
+    let editFormSnapshot = null;
+
     function render() {
+      // If we're editing, snapshot the in-progress field values before the
+      // DOM gets torn down. They're restored when renderEditMode runs again.
+      if (editingId !== null) {
+        const list = document.getElementById('bookmark-list');
+        const idSuffix = editingId;
+        const u = list.querySelector(`#edit-url-${CSS.escape(idSuffix)}`);
+        const t = list.querySelector(`#edit-title-${CSS.escape(idSuffix)}`);
+        const n = list.querySelector(`#edit-note-${CSS.escape(idSuffix)}`);
+        const tg = list.querySelector(`#edit-tags-${CSS.escape(idSuffix)}`);
+        if (u && t && n && tg) {
+          editFormSnapshot = {
+            id: editingId,
+            url: u.value,
+            title: t.value,
+            note: n.value,
+            tags: tg.value,
+          };
+        }
+      }
+
       renderFilters();
 
       const list = document.getElementById('bookmark-list');
@@ -781,6 +863,14 @@
         }
 
         list.appendChild(li);
+      }
+
+      // Restore keyboard focus to the bookmark's Edit button after exiting
+      // edit mode, so keyboard users keep their place.
+      if (pendingEditFocusId !== null) {
+        const target = list.querySelector(`[data-edit-for="${pendingEditFocusId}"]`);
+        if (target) target.focus();
+        pendingEditFocusId = null;
       }
     }
 
@@ -864,6 +954,7 @@
       const toggle = document.getElementById('form-toggle');
       toggle.hidden = false;
       toggle.setAttribute('aria-expanded', 'false');
+      toggle.focus();
       clearError();
     }
 
@@ -875,6 +966,18 @@
       document.getElementById('note-input').value = '';
       document.getElementById('tags-input').value = '';
       closeAddForm();
+    });
+
+    // Escape closes the add form (#38). Listening on the form itself so the
+    // shortcut only fires when focus is inside it.
+    document.getElementById('add-form').addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.getElementById('url-input').value = '';
+        document.getElementById('title-input').value = '';
+        document.getElementById('note-input').value = '';
+        document.getElementById('tags-input').value = '';
+        closeAddForm();
+      }
     });
 
     const searchInput = document.getElementById('search-input');
