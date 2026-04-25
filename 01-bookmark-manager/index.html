@@ -10,7 +10,7 @@
       --bg-elevated: #232433;
       --text: #e0e0e8;
       --text-dim: #9a9ab0;
-      --text-faint: #6a6a80;
+      --text-faint: #8b8ba5;
       --accent: #a4b0ff;
       --accent-hover: #b9c2ff;
       --border: #2f3047;
@@ -26,6 +26,41 @@
 
     [hidden] {
       display: none !important;
+    }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .hint {
+      color: var(--text-faint);
+      font-weight: normal;
+    }
+
+    .form-buttons {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    label {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      margin-top: 0.25rem;
+    }
+
+    *:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
     }
 
     body {
@@ -275,28 +310,43 @@
   </style>
 </head>
 <body>
-  <h1>Bookmarks</h1>
+  <main>
+    <h1>Bookmarks</h1>
 
-  <button type="button" class="form-toggle" id="form-toggle">+ Add bookmark</button>
+    <button type="button" class="form-toggle" id="form-toggle"
+            aria-expanded="false" aria-controls="add-form">
+      + Add bookmark
+    </button>
 
-  <form id="add-form" hidden>
-    <input type="text" id="url-input" placeholder="https://example.com" required>
-    <input type="text" id="title-input" placeholder="Title" required>
-    <textarea id="note-input" placeholder="Note (optional)"></textarea>
-    <input type="text" id="tags-input" placeholder="Tags, comma-separated (optional)">
-    <div style="display: flex; gap: 0.5rem;">
-      <button type="submit">Add</button>
-      <button type="button" id="form-cancel">Cancel</button>
+    <form id="add-form" hidden aria-label="Add a new bookmark">
+      <label for="url-input">URL</label>
+      <input type="text" id="url-input" placeholder="https://example.com" required>
+
+      <label for="title-input">Title</label>
+      <input type="text" id="title-input" placeholder="Title" required>
+
+      <label for="note-input">Note <span class="hint">(optional)</span></label>
+      <textarea id="note-input" placeholder="A short description"></textarea>
+
+      <label for="tags-input">Tags <span class="hint">(optional, comma-separated)</span></label>
+      <input type="text" id="tags-input" placeholder="rust, web, reference">
+
+      <div class="form-buttons">
+        <button type="submit">Add</button>
+        <button type="button" id="form-cancel">Cancel</button>
+      </div>
+      <div class="error" id="error-message" role="alert" aria-live="assertive"></div>
+    </form>
+
+    <div class="filter-row" role="search">
+      <div class="filter-tags" id="filter-tags" role="group" aria-label="Filter by tag"></div>
+      <label for="search-input" class="visually-hidden">Search bookmarks</label>
+      <input type="text" class="search-input" id="search-input"
+             placeholder="Search…" aria-label="Search bookmarks">
     </div>
-    <div class="error" id="error-message"></div>
-  </form>
 
-  <div class="filter-row">
-    <div class="filter-tags" id="filter-tags"></div>
-    <input type="text" class="search-input" id="search-input" placeholder="Search…">
-  </div>
-
-  <ul class="bookmark-list" id="bookmark-list"></ul>
+    <ul class="bookmark-list" id="bookmark-list" aria-live="polite" aria-label="Bookmarks"></ul>
+  </main>
 
   <script>
     const STORAGE_KEY = 'bookmarks';
@@ -389,7 +439,8 @@
 
       const editBtn = document.createElement('button');
       editBtn.className = 'icon-button';
-      editBtn.textContent = '✎ Edit';
+      editBtn.innerHTML = '<span aria-hidden="true">✎</span> Edit';
+      editBtn.setAttribute('aria-label', `Edit bookmark: ${bookmark.title}`);
       editBtn.addEventListener('click', () => {
         editingId = bookmark.id;
         render();
@@ -398,7 +449,8 @@
 
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'icon-button delete';
-      deleteBtn.textContent = '🗑 Delete';
+      deleteBtn.innerHTML = '<span aria-hidden="true">🗑</span> Delete';
+      deleteBtn.setAttribute('aria-label', `Delete bookmark: ${bookmark.title}`);
       deleteBtn.addEventListener('click', () => deleteBookmark(bookmark.id));
       actions.appendChild(deleteBtn);
 
@@ -502,6 +554,7 @@
       const allBtn = document.createElement('button');
       allBtn.className = 'filter-button' + (activeTag === null ? ' active' : '');
       allBtn.textContent = 'All';
+      allBtn.setAttribute('aria-pressed', activeTag === null ? 'true' : 'false');
       allBtn.addEventListener('click', () => {
         activeTag = null;
         render();
@@ -513,6 +566,7 @@
         const btn = document.createElement('button');
         btn.className = 'filter-button' + (activeTag === tag ? ' active' : '');
         btn.textContent = tag;
+        btn.setAttribute('aria-pressed', activeTag === tag ? 'true' : 'false');
         btn.addEventListener('click', () => {
           activeTag = tag;
           render();
@@ -643,13 +697,17 @@
 
     function openAddForm() {
       document.getElementById('add-form').hidden = false;
-      document.getElementById('form-toggle').hidden = true;
+      const toggle = document.getElementById('form-toggle');
+      toggle.hidden = true;
+      toggle.setAttribute('aria-expanded', 'true');
       document.getElementById('url-input').focus();
     }
 
     function closeAddForm() {
       document.getElementById('add-form').hidden = true;
-      document.getElementById('form-toggle').hidden = false;
+      const toggle = document.getElementById('form-toggle');
+      toggle.hidden = false;
+      toggle.setAttribute('aria-expanded', 'false');
       clearError();
     }
 
