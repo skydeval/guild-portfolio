@@ -354,12 +354,43 @@
     let activeTag = null;
     let searchQuery = '';
 
+    function isValidBookmark(b) {
+      return b
+        && typeof b.id === 'string' && b.id.length > 0
+        && typeof b.url === 'string' && b.url.length > 0
+        && typeof b.title === 'string' && b.title.length > 0
+        && typeof b.createdAt === 'number';
+    }
+
+    function normalizeBookmark(b) {
+      // Coerce optional fields to safe defaults so older entries (from before
+      // note/tags existed) don't break rendering.
+      return {
+        ...b,
+        note: typeof b.note === 'string' ? b.note : '',
+        tags: Array.isArray(b.tags) ? b.tags.filter(t => typeof t === 'string') : [],
+      };
+    }
+
     function loadBookmarks() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        if (!Array.isArray(parsed)) return [];
+        const valid = [];
+        let droppedCount = 0;
+        for (const item of parsed) {
+          if (isValidBookmark(item)) {
+            valid.push(normalizeBookmark(item));
+          } else {
+            droppedCount++;
+          }
+        }
+        if (droppedCount > 0) {
+          console.warn(`Dropped ${droppedCount} malformed bookmark(s) on load.`);
+        }
+        return valid;
       } catch (e) {
         console.warn('Could not parse bookmarks from localStorage:', e);
         return [];
@@ -367,22 +398,34 @@
     }
 
     function saveBookmarks(bookmarks) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(bookmarks));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(bookmarks));
+        return true;
+      } catch (e) {
+        console.error('Could not save bookmarks:', e);
+        if (e.name === 'QuotaExceededError') {
+          showError('Storage is full. Delete some bookmarks to make space.');
+        } else {
+          showError('Could not save bookmark. See browser console for details.');
+        }
+        return false;
+      }
     }
 
     function deleteBookmark(id) {
       if (!confirm('Delete this bookmark?')) return;
       const bookmarks = loadBookmarks().filter(b => b.id !== id);
-      saveBookmarks(bookmarks);
-      render();
+      if (saveBookmarks(bookmarks)) {
+        render();
+      }
     }
 
     function updateBookmark(id, updates) {
       const bookmarks = loadBookmarks();
       const idx = bookmarks.findIndex(b => b.id === id);
-      if (idx === -1) return;
+      if (idx === -1) return false;
       bookmarks[idx] = { ...bookmarks[idx], ...updates };
-      saveBookmarks(bookmarks);
+      return saveBookmarks(bookmarks);
     }
 
     function extractDomain(url) {
@@ -510,12 +553,16 @@
           return;
         }
 
-        updateBookmark(bookmark.id, {
+        const saved = updateBookmark(bookmark.id, {
           title: newTitle,
           url: newUrl,
           note: newNote,
           tags: newTags,
         });
+        if (!saved) {
+          errorDiv.textContent = 'Could not save changes. Storage may be full.';
+          return;
+        }
         editingId = null;
         render();
       });
@@ -678,14 +725,18 @@
 
       const bookmarks = loadBookmarks();
       bookmarks.push({
-        id: Date.now().toString(),
+        id: crypto.randomUUID(),
         url,
         title,
         note,
         tags,
         createdAt: Date.now(),
       });
-      saveBookmarks(bookmarks);
+      const saved = saveBookmarks(bookmarks);
+      if (!saved) {
+        // Don't clear the form or close it — user keeps their input to retry.
+        return;
+      }
 
       urlInput.value = '';
       titleInput.value = '';
