@@ -236,6 +236,13 @@
       text-decoration: underline;
     }
 
+    .bookmark-title-invalid {
+      font-size: 1.05rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      text-decoration: line-through;
+    }
+
     .bookmark-domain {
       font-size: 0.8rem;
       color: var(--text-faint);
@@ -320,16 +327,16 @@
 
     <form id="add-form" hidden aria-label="Add a new bookmark">
       <label for="url-input">URL</label>
-      <input type="text" id="url-input" placeholder="https://example.com" required>
+      <input type="text" id="url-input" placeholder="https://example.com" required maxlength="2048">
 
       <label for="title-input">Title</label>
-      <input type="text" id="title-input" placeholder="Title" required>
+      <input type="text" id="title-input" placeholder="Title" required maxlength="200">
 
       <label for="note-input">Note <span class="hint">(optional)</span></label>
-      <textarea id="note-input" placeholder="A short description"></textarea>
+      <textarea id="note-input" placeholder="A short description" maxlength="1000"></textarea>
 
       <label for="tags-input">Tags <span class="hint">(optional, comma-separated)</span></label>
-      <input type="text" id="tags-input" placeholder="rust, web, reference">
+      <input type="text" id="tags-input" placeholder="rust, web, reference" maxlength="200">
 
       <div class="form-buttons">
         <button type="submit">Add</button>
@@ -441,19 +448,34 @@
       const header = document.createElement('div');
       header.className = 'bookmark-header';
 
-      const link = document.createElement('a');
-      link.href = bookmark.url;
-      link.textContent = bookmark.title;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      header.appendChild(link);
+      // Defense in depth: even though add/edit reject non-http(s) URLs,
+      // re-validate at render time in case a malformed URL got into storage
+      // (manual edit, future bug, etc.). If invalid, show as plain text.
+      if (isValidUrl(bookmark.url)) {
+        const link = document.createElement('a');
+        link.href = bookmark.url;
+        link.textContent = bookmark.title;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        header.appendChild(link);
 
-      const domain = extractDomain(bookmark.url);
-      if (domain) {
-        const domainLabel = document.createElement('span');
-        domainLabel.className = 'bookmark-domain';
-        domainLabel.textContent = domain;
-        header.appendChild(domainLabel);
+        const domain = extractDomain(bookmark.url);
+        if (domain) {
+          const domainLabel = document.createElement('span');
+          domainLabel.className = 'bookmark-domain';
+          domainLabel.textContent = domain;
+          header.appendChild(domainLabel);
+        }
+      } else {
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'bookmark-title-invalid';
+        titleSpan.textContent = bookmark.title;
+        header.appendChild(titleSpan);
+
+        const warning = document.createElement('span');
+        warning.className = 'bookmark-domain';
+        warning.textContent = '(invalid URL)';
+        header.appendChild(warning);
       }
 
       li.appendChild(header);
@@ -507,22 +529,26 @@
       const titleField = document.createElement('input');
       titleField.type = 'text';
       titleField.value = bookmark.title;
+      titleField.maxLength = 200;
       form.appendChild(titleField);
 
       const urlField = document.createElement('input');
       urlField.type = 'text';
       urlField.value = bookmark.url;
+      urlField.maxLength = 2048;
       form.appendChild(urlField);
 
       const noteField = document.createElement('textarea');
       noteField.value = bookmark.note || '';
       noteField.placeholder = 'Note (optional)';
+      noteField.maxLength = 1000;
       form.appendChild(noteField);
 
       const tagsField = document.createElement('input');
       tagsField.type = 'text';
       tagsField.value = (bookmark.tags || []).join(', ');
       tagsField.placeholder = 'Tags, comma-separated (optional)';
+      tagsField.maxLength = 200;
       form.appendChild(tagsField);
 
       const errorDiv = document.createElement('div');
@@ -549,7 +575,7 @@
           return;
         }
         if (!isValidUrl(newUrl)) {
-          errorDiv.textContent = 'URL must start with http:// or https://';
+          errorDiv.textContent = 'Enter a valid URL starting with http:// or https://';
           return;
         }
 
@@ -693,7 +719,15 @@
     }
 
     function isValidUrl(url) {
-      return url.startsWith('http://') || url.startsWith('https://');
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return false;
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      if (!parsed.hostname) return false;
+      return true;
     }
 
     document.getElementById('add-form').addEventListener('submit', (e) => {
@@ -719,7 +753,7 @@
       }
 
       if (!isValidUrl(url)) {
-        showError('URL must start with http:// or https://');
+        showError('Enter a valid URL starting with http:// or https://');
         return;
       }
 
