@@ -169,12 +169,39 @@
 
     .search-input {
       padding: 0.45rem 0.7rem;
+      padding-right: 2rem;
       font-size: 0.9rem;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: var(--bg-elevated);
       color: var(--text);
       min-width: 12rem;
+      width: 100%;
+    }
+
+    .search-wrapper {
+      position: relative;
+      display: inline-block;
+    }
+
+    .search-clear {
+      position: absolute;
+      right: 0.4rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 1.2rem;
+      line-height: 1;
+      padding: 0.2rem 0.4rem;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    .search-clear:hover {
+      color: var(--text);
+      background: var(--border);
     }
 
     .filter-button {
@@ -209,12 +236,6 @@
     .bookmark {
       padding: 0.85rem 0;
       border-bottom: 1px solid var(--border);
-      animation: fadeIn 0.2s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-2px); }
-      to   { opacity: 1; transform: translateY(0); }
     }
 
     .bookmark-header {
@@ -268,7 +289,17 @@
       font-size: 0.78rem;
       background: var(--tag-bg);
       color: var(--tag-text);
+      border: 1px solid transparent;
       border-radius: 999px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .tag-badge:hover {
+      background: var(--border);
+      color: var(--text);
+      border-color: var(--accent);
     }
 
     .bookmark-actions {
@@ -347,9 +378,13 @@
 
     <div class="filter-row" role="search">
       <div class="filter-tags" id="filter-tags" role="group" aria-label="Filter by tag"></div>
-      <label for="search-input" class="visually-hidden">Search bookmarks</label>
-      <input type="text" class="search-input" id="search-input"
-             placeholder="Search…" aria-label="Search bookmarks">
+      <div class="search-wrapper">
+        <label for="search-input" class="visually-hidden">Search bookmarks</label>
+        <input type="text" class="search-input" id="search-input"
+               placeholder="Search…" aria-label="Search bookmarks">
+        <button type="button" class="search-clear" id="search-clear" hidden
+                aria-label="Clear search">×</button>
+      </div>
     </div>
 
     <ul class="bookmark-list" id="bookmark-list" aria-live="polite" aria-label="Bookmarks"></ul>
@@ -517,9 +552,15 @@
         const tagsContainer = document.createElement('div');
         tagsContainer.className = 'bookmark-tags';
         for (const tag of bookmark.tags) {
-          const badge = document.createElement('span');
+          const badge = document.createElement('button');
+          badge.type = 'button';
           badge.className = 'tag-badge';
           badge.textContent = tag;
+          badge.setAttribute('aria-label', `Filter by tag: ${tag}`);
+          badge.addEventListener('click', () => {
+            activeTag = tag;
+            render();
+          });
           tagsContainer.appendChild(badge);
         }
         li.appendChild(tagsContainer);
@@ -549,45 +590,65 @@
     }
 
     function renderEditMode(bookmark, li) {
-      const form = document.createElement('div');
+      const form = document.createElement('form');
       form.className = 'edit-form';
-
-      const titleField = document.createElement('input');
-      titleField.type = 'text';
-      titleField.value = bookmark.title;
-      titleField.maxLength = 200;
-      form.appendChild(titleField);
 
       const urlField = document.createElement('input');
       urlField.type = 'text';
       urlField.value = bookmark.url;
+      urlField.placeholder = 'https://example.com';
       urlField.maxLength = 2048;
       form.appendChild(urlField);
 
+      const titleField = document.createElement('input');
+      titleField.type = 'text';
+      titleField.value = bookmark.title;
+      titleField.placeholder = 'Title';
+      titleField.maxLength = 200;
+      form.appendChild(titleField);
+
       const noteField = document.createElement('textarea');
       noteField.value = bookmark.note || '';
-      noteField.placeholder = 'Note (optional)';
+      noteField.placeholder = 'A short description';
       noteField.maxLength = 1000;
       form.appendChild(noteField);
 
       const tagsField = document.createElement('input');
       tagsField.type = 'text';
       tagsField.value = (bookmark.tags || []).join(', ');
-      tagsField.placeholder = 'Tags, comma-separated (optional)';
+      tagsField.placeholder = 'Tags, comma-separated';
       tagsField.maxLength = 200;
       form.appendChild(tagsField);
 
       const errorDiv = document.createElement('div');
       errorDiv.className = 'error';
+      errorDiv.setAttribute('role', 'alert');
+      errorDiv.setAttribute('aria-live', 'assertive');
       form.appendChild(errorDiv);
 
       const actions = document.createElement('div');
       actions.className = 'edit-actions';
 
       const saveBtn = document.createElement('button');
+      saveBtn.type = 'submit';
       saveBtn.className = 'icon-button';
       saveBtn.textContent = 'Save';
-      saveBtn.addEventListener('click', () => {
+      actions.appendChild(saveBtn);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'icon-button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => {
+        editingId = null;
+        render();
+      });
+      actions.appendChild(cancelBtn);
+
+      form.appendChild(actions);
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
         const newTitle = titleField.value.trim();
         const newUrl = urlField.value.trim();
         const newNote = noteField.value.trim();
@@ -615,18 +676,7 @@
         editingId = null;
         render();
       });
-      actions.appendChild(saveBtn);
 
-      const cancelBtn = document.createElement('button');
-      cancelBtn.className = 'icon-button';
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.addEventListener('click', () => {
-        editingId = null;
-        render();
-      });
-      actions.appendChild(cancelBtn);
-
-      form.appendChild(actions);
       li.appendChild(form);
     }
 
@@ -702,7 +752,8 @@
         filtered = filtered.filter(b => {
           const title = (b.title || '').toLowerCase();
           const note = (b.note || '').toLowerCase();
-          return title.includes(q) || note.includes(q);
+          const tagsHit = (b.tags || []).some(t => t.includes(q));
+          return title.includes(q) || note.includes(q) || tagsHit;
         });
       }
 
@@ -826,8 +877,20 @@
       closeAddForm();
     });
 
-    document.getElementById('search-input').addEventListener('input', (e) => {
+    const searchInput = document.getElementById('search-input');
+    const searchClear = document.getElementById('search-clear');
+
+    searchInput.addEventListener('input', (e) => {
       searchQuery = e.target.value.trim();
+      searchClear.hidden = e.target.value.length === 0;
+      render();
+    });
+
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      searchQuery = '';
+      searchClear.hidden = true;
+      searchInput.focus();
       render();
     });
 
