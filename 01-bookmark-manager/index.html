@@ -371,11 +371,21 @@
 
     function normalizeBookmark(b) {
       // Coerce optional fields to safe defaults so older entries (from before
-      // note/tags existed) don't break rendering.
+      // note/tags existed) don't break rendering. Also normalize tags to
+      // lowercase + dedupe so existing data picks up the case-insensitive fix.
+      const rawTags = Array.isArray(b.tags) ? b.tags.filter(t => typeof t === 'string') : [];
+      const seen = new Set();
+      const tags = [];
+      for (const t of rawTags) {
+        const lower = t.toLowerCase();
+        if (lower.length === 0 || seen.has(lower)) continue;
+        seen.add(lower);
+        tags.push(lower);
+      }
       return {
         ...b,
         note: typeof b.note === 'string' ? b.note : '',
-        tags: Array.isArray(b.tags) ? b.tags.filter(t => typeof t === 'string') : [],
+        tags,
       };
     }
 
@@ -442,6 +452,22 @@
       } catch {
         return '';
       }
+    }
+
+    function parseTags(input) {
+      // Split, trim, lowercase, drop empties, dedupe within this bookmark.
+      // Lowercasing keeps tags consistent with the case-insensitive search
+      // and prevents "JavaScript" / "javascript" from fragmenting the taxonomy.
+      const seen = new Set();
+      const result = [];
+      for (const raw of input.split(',')) {
+        const tag = raw.trim().toLowerCase();
+        if (tag.length === 0) continue;
+        if (seen.has(tag)) continue;
+        seen.add(tag);
+        result.push(tag);
+      }
+      return result;
     }
 
     function renderDisplayMode(bookmark, li) {
@@ -565,10 +591,7 @@
         const newTitle = titleField.value.trim();
         const newUrl = urlField.value.trim();
         const newNote = noteField.value.trim();
-        const newTags = tagsField.value
-          .split(',')
-          .map(t => t.trim())
-          .filter(t => t.length > 0);
+        const newTags = parseTags(tagsField.value);
 
         if (!newTitle) {
           errorDiv.textContent = 'Title cannot be empty.';
@@ -742,10 +765,7 @@
       const url = urlInput.value.trim();
       const title = titleInput.value.trim();
       const note = noteInput.value.trim();
-      const tags = tagsInput.value
-        .split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0);
+      const tags = parseTags(tagsInput.value);
 
       if (!title) {
         showError('Title cannot be empty.');
