@@ -36,60 +36,45 @@ verified working as desired
 # What I learned
 First time i used a design doc, I learned it makes development a LOT easier, and faster. Adding more to the design was easier in waves aswell. Like building a building, start with the foundation and add each floor as layers while you build up. The only bug in the process was at the end with collapsing the form when unneeded. Which was very easy to rectify.
 
-# Known Issues
-- The manager is only dark theme, when it started out light theme. A light/dark theme toggle would be better.
-- A way to import/export bookmarks would also be nice, especially since localstorage could be wiped out; export/import would be great to safeguard against that.
-- Tags aren't deduplicated. 
-
-## Review 1
-- 12 issues bring up missing accessibility solutions
-- the url validation doesn't check for actual urls, just for http/https
-- only createdat, no updatedat so editing doesn't alter the listing. "for a personal tool this is fine, for a portfolio piece it shows lack of forethought"
-- no length limits; without limits it could crash localStorage
-- cancel in edit mode doesn't warn about unsaved changes
-a lot of the problems listed i could consider as not worth doing, but they're also tiny fixes 
-
-
-
 # Review 1 
 
-### Adversary's "what to fix first" — agreed
+## Adversary's "what to fix first" — agreed
 The top five recommendations (#5, #12, #17, #21, #49) are
 all valid and addressed in commits below.
 
-### Accessibility batch (#21, #22, #23, #24, #25, #26, #27, #28, #29, #31)
+## Accessibility batch (#21, #22, #23, #24, #25, #26, #27, #28, #29, #31)
 Twelve findings about accessibility. All valid. Addressed as a batch.
 
-### Data robustness (#5, #12, #18)
+## Data robustness (#5, #12, #18)
 UUID IDs, localStorage quota handling, load-time shape validation. All valid.
 Addressed as a batch.
 
-### Validation hardening (#1, #11, #17)
+## Validation hardening (#1, #11, #17)
 URL parsing rather than prefix-only, length limits on inputs, render-time
 scheme allow-listing. All valid. Addressed as a batch.
 
-### UX polish (#15, #35, #39, #41, #42, #45, #46)
+## UX polish (#15, #35, #39, #41, #42, #45, #46)
 Edit-form Enter handling, clickable tag badges, animation-only-on-entry,
 field-order parity, clear-search button, search-includes-tags. All valid,
 all small fixes.
 
-### Tag system normalization (#9, #10)
+## Tag system normalization (#9, #10)
 Tags were case-sensitive while search is case-insensitive, and per-bookmark
 duplicates weren't filtered. Both valid. Addressed.
 
-### Marked invalid
+## Marked invalid
 - #4: function declarations are hoisted; this is how JavaScript works.
 - #7: the adversary misread the control flow; it's intentional, not "by accident."
 - #32: the adversary admitted "lang=en is set. Good. one thing right." Counted as filler.
 - #44: dashed full-width add button is a stylistic choice; keeping it.
-- #53: license file isn't required for the this project's 
+- #53: license file isn't required for this project's
   subdirectory; the curriculum repo itself doesn't have one there.
 - #54: "no version control evidence"; the code is in a git repo on github;
   adversary lacked that context because I pasted files into a fresh chat.
 - #55, #58, #59, #61, #62, #64, #65, #66: stylistic preferences or
   capstone-quality concerns out of scope for a phase 1 personal tool.
 
-### Acknowledged but deferred
+## Acknowledged but deferred
 - #6: edit doesn't update timestamps. Defensible by adversary's own admission.
 - #14: multi-tab race condition. Out of scope from design doc ("single user").
 - #30: confirm() for delete is acceptable for v1, adversary admits this.
@@ -97,3 +82,51 @@ duplicates weren't filtered. Both valid. Addressed.
   improvements but are out of scope for v1.0; some land on the enhanced branch.
 - #51, #57: documentation depth could be richer; deferred.
 
+# Review 2
+
+## Genuine new finds Review 1 missed
+- #2: edit mode is missing `<label>` elements (regression of Review 1's accessibility batch — I added labels to the add form but missed the edit form's dynamically-built fields).
+- #3: typing in search while in edit mode rebuilds the bookmark list and destroys in-progress edits silently.
+- #7: `isValidBookmark` accepts `NaN` and `Infinity` for `createdAt`, which would poison the sort.
+- #18: form-toggle close doesn't restore focus to the toggle button (keyboard users lose their place).
+- #19: same issue on edit-mode Cancel.
+- #20: `aria-live="polite"` on the bookmark list spams screen readers on every keystroke. Should be on a separate status region, not the list.
+- #21: `role="alert"` and `aria-live="assertive"` are redundant on the same element.
+- #23: `role="search"` wrapping the tag filter group is semantically wrong; should wrap only the search input.
+- #38: Escape doesn't close the add form.
+- #42: clicking an already-active tag doesn't toggle the filter off.
+- #49: known-issues note about tags-not-deduplicating is stale; tags are deduplicated in `parseTags` and `normalizeBookmark`.
+
+All addressed in commits below.
+
+## Partial — noted but not fixed
+- #1: trim-on-input vs clear-button visibility inconsistency. Edge case nobody hits in practice.
+- #6: `isValidBookmark` doesn't validate URL parses. Render-time `isValidUrl` already gates malformed URLs from being clickable; load-time gating is gilding.
+- #27: `--text-faint` on `--bg-elevated` measures 4.62:1 — passes AA with little headroom. Could lighten further, not blocking.
+- #33: load-time `maxLength` enforcement on migrated data. Same defense-in-depth-already-handled-elsewhere reasoning as #6.
+
+## Marked invalid
+- #4, #5, #40: render performance for 500+ bookmarks. Design doc is a personal tool; this is over-engineering for the scale.
+- #8: `crypto.randomUUID` fallback. Available in every modern browser; no real fallback need in 2026.
+- #13, #36, #37, #41, #43, #44, #46: search relevance, success toast, active-filter affordance, hover states. All "this could be more polished" against an explicit personal-tool scope.
+- #14, #15, #17: security stretches; adversary admits "fine for a personal tool."
+- #28: claimed contrast failure on danger color. Measured at 5.99:1 — passes AA with headroom. Adversary eyeballed, didn't measure.
+- #47: calling Review 1's hoisting dismissal a "deflection." It's not; function hoisting is correct JavaScript behavior.
+- #48: wanting finding-to-commit traceability beyond what curriculum's PROCESS.md template specifies.
+- #50: questioning my layer-5 verification adequacy. The curriculum's verification step was satisfied; the adversary is reaching.
+- #51, #52, #53, #54, #56: schema versioning, tests, license, favicon. All capstone-level concerns out of scope for a phase 1 personal tool.
+
+## Acknowledged but deferred (already in scope discussion)
+- #9: no undo for delete — same data-loss concern as Review 1 #16, deferred.
+- #16: no CSP — same as Review 1 #19, deferred for `file://` use.
+- #22, #24, #25, #26: accessibility polish (verbose aria-labels, roving tabindex, skip link). Real but beyond v1 scope.
+- #29, #30: `prefers-reduced-motion`, `prefers-color-scheme`. Review 1 #40 deferred reduced-motion; same call here.
+- #31, #32: trim-vs-preserve whitespace, `type="url"` vs `type="text"`. Stylistic; current behavior is intentional.
+- #34: redundant defensive checks after normalization. Cosmetic refactor.
+- #35: surface dropped-bookmark count to UI. Real, deferred to v1.1.
+- #39, #45: clear-button tap target, keyboard shortcuts. Same v1.1 deferral as Review 1 equivalents.
+- #55: "out of scope by design" vs "deferred" pedantry. Will note where applicable.
+
+# Known Issues
+- The manager is only dark theme, when it started out light theme. A light/dark theme toggle would be better.
+- A way to import/export bookmarks would also be nice, especially since localstorage could be wiped out; export/import would be great to safeguard against that.
