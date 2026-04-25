@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bookmarks</title>
+  <style>
+    :root {
+      --bg: #1a1b26;
+      --bg-elevated: #232433;
+      --text: #e0e0e8;
+      --text-dim: #9a9ab0;
+      --text-faint: #6a6a80;
+      --accent: #a4b0ff;
+      --accent-hover: #b9c2ff;
+      --border: #2f3047;
+      --danger: #ff8a8a;
+      --danger-bg: #3a2a2a;
+      --tag-bg: #2a2c40;
+      --tag-text: #c0c4dd;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1.25rem 4rem;
+      line-height: 1.55;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 16px;
+    }
+
+    h1 {
+      margin: 0 0 1.5rem 0;
+      font-size: 1.75rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      margin-bottom: 1.5rem;
+    }
+
+    input, textarea {
+      padding: 0.55rem 0.7rem;
+      font-size: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: inherit;
+      background: var(--bg-elevated);
+      color: var(--text);
+      transition: border-color 0.15s ease;
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 4rem;
+    }
+
+    input::placeholder, textarea::placeholder {
+      color: var(--text-faint);
+    }
+
+    button {
+      padding: 0.5rem 1rem;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      color: var(--text);
+      font-family: inherit;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    button:hover {
+      background: var(--border);
+    }
+
+    .error {
+      color: var(--danger);
+      font-size: 0.9rem;
+      min-height: 1.2em;
+    }
+
+    /* Form collapse toggle */
+    .form-toggle {
+      width: 100%;
+      padding: 0.6rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.95rem;
+      color: var(--accent);
+      background: var(--bg-elevated);
+      border: 1px dashed var(--border);
+    }
+
+    .form-toggle:hover {
+      background: var(--border);
+      border-style: solid;
+    }
+
+    /* Filter row */
+    .filter-row {
+      margin-bottom: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .filter-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      flex: 1;
+    }
+
+    .search-input {
+      padding: 0.45rem 0.7rem;
+      font-size: 0.9rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      color: var(--text);
+      min-width: 12rem;
+    }
+
+    .filter-button {
+      padding: 0.3rem 0.8rem;
+      font-size: 0.85rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .filter-button:hover {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .filter-button.active {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+
+    /* Bookmark list */
+    .bookmark-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .bookmark {
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--border);
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-2px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .bookmark-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+
+    .bookmark a {
+      font-size: 1.05rem;
+      font-weight: 500;
+      text-decoration: none;
+      color: var(--accent);
+    }
+
+    .bookmark a:hover {
+      color: var(--accent-hover);
+      text-decoration: underline;
+    }
+
+    .bookmark-domain {
+      font-size: 0.8rem;
+      color: var(--text-faint);
+      font-family: ui-monospace, "SF Mono", monospace;
+    }
+
+    .bookmark-note {
+      margin: 0.35rem 0 0 0;
+      color: var(--text-dim);
+      font-size: 0.95rem;
+    }
+
+    .bookmark-tags {
+      margin-top: 0.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+    }
+
+    .tag-badge {
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      font-size: 0.78rem;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      border-radius: 999px;
+    }
+
+    .bookmark-actions {
+      margin-top: 0.5rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .icon-button {
+      padding: 0.2rem 0.6rem;
+      font-size: 0.82rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .icon-button:hover {
+      background: var(--bg-elevated);
+      color: var(--text);
+    }
+
+    .icon-button.delete:hover {
+      background: var(--danger-bg);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    .edit-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .edit-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .empty {
+      color: var(--text-faint);
+      font-style: italic;
+      padding: 1rem 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Bookmarks</h1>
+
+  <button type="button" class="form-toggle" id="form-toggle">+ Add bookmark</button>
+
+  <form id="add-form" hidden>
+    <input type="text" id="url-input" placeholder="https://example.com" required>
+    <input type="text" id="title-input" placeholder="Title" required>
+    <textarea id="note-input" placeholder="Note (optional)"></textarea>
+    <input type="text" id="tags-input" placeholder="Tags, comma-separated (optional)">
+    <div style="display: flex; gap: 0.5rem;">
+      <button type="submit">Add</button>
+      <button type="button" id="form-cancel">Cancel</button>
+    </div>
+    <div class="error" id="error-message"></div>
+  </form>
+
+  <div class="filter-row">
+    <div class="filter-tags" id="filter-tags"></div>
+    <input type="text" class="search-input" id="search-input" placeholder="Search…">
+  </div>
+
+  <ul class="bookmark-list" id="bookmark-list"></ul>
+
+  <script>
+    const STORAGE_KEY = 'bookmarks';
+    let editingId = null;
+    let activeTag = null;
+    let searchQuery = '';
+
+    function loadBookmarks() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        console.warn('Could not parse bookmarks from localStorage:', e);
+        return [];
+      }
+    }
+
+    function saveBookmarks(bookmarks) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(bookmarks));
+    }
+
+    function deleteBookmark(id) {
+      if (!confirm('Delete this bookmark?')) return;
+      const bookmarks = loadBookmarks().filter(b => b.id !== id);
+      saveBookmarks(bookmarks);
+      render();
+    }
+
+    function updateBookmark(id, updates) {
+      const bookmarks = loadBookmarks();
+      const idx = bookmarks.findIndex(b => b.id === id);
+      if (idx === -1) return;
+      bookmarks[idx] = { ...bookmarks[idx], ...updates };
+      saveBookmarks(bookmarks);
+    }
+
+    function extractDomain(url) {
+      try {
+        const u = new URL(url);
+        return u.hostname.replace(/^www\./, '');
+      } catch {
+        return '';
+      }
+    }
+
+    function renderDisplayMode(bookmark, li) {
+      const header = document.createElement('div');
+      header.className = 'bookmark-header';
+
+      const link = document.createElement('a');
+      link.href = bookmark.url;
+      link.textContent = bookmark.title;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      header.appendChild(link);
+
+      const domain = extractDomain(bookmark.url);
+      if (domain) {
+        const domainLabel = document.createElement('span');
+        domainLabel.className = 'bookmark-domain';
+        domainLabel.textContent = domain;
+        header.appendChild(domainLabel);
+      }
+
+      li.appendChild(header);
+
+      if (bookmark.note) {
+        const note = document.createElement('p');
+        note.className = 'bookmark-note';
+        note.textContent = bookmark.note;
+        li.appendChild(note);
+      }
+
+      if (bookmark.tags && bookmark.tags.length > 0) {
+        const tagsContainer = document.createElement('div');
+        tagsContainer.className = 'bookmark-tags';
+        for (const tag of bookmark.tags) {
+          const badge = document.createElement('span');
+          badge.className = 'tag-badge';
+          badge.textContent = tag;
+          tagsContainer.appendChild(badge);
+        }
+        li.appendChild(tagsContainer);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'bookmark-actions';
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'icon-button';
+      editBtn.textContent = '✎ Edit';
+      editBtn.addEventListener('click', () => {
+        editingId = bookmark.id;
+        render();
+      });
+      actions.appendChild(editBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'icon-button delete';
+      deleteBtn.textContent = '🗑 Delete';
+      deleteBtn.addEventListener('click', () => deleteBookmark(bookmark.id));
+      actions.appendChild(deleteBtn);
+
+      li.appendChild(actions);
+    }
+
+    function renderEditMode(bookmark, li) {
+      const form = document.createElement('div');
+      form.className = 'edit-form';
+
+      const titleField = document.createElement('input');
+      titleField.type = 'text';
+      titleField.value = bookmark.title;
+      form.appendChild(titleField);
+
+      const urlField = document.createElement('input');
+      urlField.type = 'text';
+      urlField.value = bookmark.url;
+      form.appendChild(urlField);
+
+      const noteField = document.createElement('textarea');
+      noteField.value = bookmark.note || '';
+      noteField.placeholder = 'Note (optional)';
+      form.appendChild(noteField);
+
+      const tagsField = document.createElement('input');
+      tagsField.type = 'text';
+      tagsField.value = (bookmark.tags || []).join(', ');
+      tagsField.placeholder = 'Tags, comma-separated (optional)';
+      form.appendChild(tagsField);
+
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'error';
+      form.appendChild(errorDiv);
+
+      const actions = document.createElement('div');
+      actions.className = 'edit-actions';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'icon-button';
+      saveBtn.textContent = 'Save';
+      saveBtn.addEventListener('click', () => {
+        const newTitle = titleField.value.trim();
+        const newUrl = urlField.value.trim();
+        const newNote = noteField.value.trim();
+        const newTags = tagsField.value
+          .split(',')
+          .map(t => t.trim())
+          .filter(t => t.length > 0);
+
+        if (!newTitle) {
+          errorDiv.textContent = 'Title cannot be empty.';
+          return;
+        }
+        if (!isValidUrl(newUrl)) {
+          errorDiv.textContent = 'URL must start with http:// or https://';
+          return;
+        }
+
+        updateBookmark(bookmark.id, {
+          title: newTitle,
+          url: newUrl,
+          note: newNote,
+          tags: newTags,
+        });
+        editingId = null;
+        render();
+      });
+      actions.appendChild(saveBtn);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'icon-button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => {
+        editingId = null;
+        render();
+      });
+      actions.appendChild(cancelBtn);
+
+      form.appendChild(actions);
+      li.appendChild(form);
+    }
+
+    function renderFilters() {
+      const filterRow = document.getElementById('filter-tags');
+      const bookmarks = loadBookmarks();
+      filterRow.innerHTML = '';
+
+      // Collect all unique tags across all bookmarks
+      const tagSet = new Set();
+      for (const bookmark of bookmarks) {
+        if (bookmark.tags) {
+          for (const tag of bookmark.tags) {
+            tagSet.add(tag);
+          }
+        }
+      }
+      const allTags = [...tagSet].sort();
+
+      // "All" button
+      const allBtn = document.createElement('button');
+      allBtn.className = 'filter-button' + (activeTag === null ? ' active' : '');
+      allBtn.textContent = 'All';
+      allBtn.addEventListener('click', () => {
+        activeTag = null;
+        render();
+      });
+      filterRow.appendChild(allBtn);
+
+      // One button per unique tag
+      for (const tag of allTags) {
+        const btn = document.createElement('button');
+        btn.className = 'filter-button' + (activeTag === tag ? ' active' : '');
+        btn.textContent = tag;
+        btn.addEventListener('click', () => {
+          activeTag = tag;
+          render();
+        });
+        filterRow.appendChild(btn);
+      }
+    }
+
+    function render() {
+      renderFilters();
+
+      const list = document.getElementById('bookmark-list');
+      const bookmarks = loadBookmarks();
+      list.innerHTML = '';
+
+      // If the active tag no longer exists on any bookmark (e.g., the last
+      // bookmark with that tag was deleted), reset to All so we don't show
+      // an empty list under a stale filter.
+      if (activeTag !== null) {
+        const tagStillExists = bookmarks.some(
+          b => b.tags && b.tags.includes(activeTag)
+        );
+        if (!tagStillExists) {
+          activeTag = null;
+          renderFilters();
+        }
+      }
+
+      // Apply tag filter
+      let filtered = activeTag === null
+        ? bookmarks
+        : bookmarks.filter(b => b.tags && b.tags.includes(activeTag));
+
+      // Apply search filter on top of tag filter
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        filtered = filtered.filter(b => {
+          const title = (b.title || '').toLowerCase();
+          const note = (b.note || '').toLowerCase();
+          return title.includes(q) || note.includes(q);
+        });
+      }
+
+      if (filtered.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'empty';
+        empty.textContent = bookmarks.length === 0
+          ? 'No bookmarks yet. Add one above.'
+          : 'No bookmarks match the current filter.';
+        list.appendChild(empty);
+        return;
+      }
+
+      // Newest first
+      const sorted = [...filtered].sort((a, b) => b.createdAt - a.createdAt);
+
+      for (const bookmark of sorted) {
+        const li = document.createElement('li');
+        li.className = 'bookmark';
+
+        if (editingId === bookmark.id) {
+          renderEditMode(bookmark, li);
+        } else {
+          renderDisplayMode(bookmark, li);
+        }
+
+        list.appendChild(li);
+      }
+    }
+
+    function showError(message) {
+      document.getElementById('error-message').textContent = message;
+    }
+
+    function clearError() {
+      document.getElementById('error-message').textContent = '';
+    }
+
+    function isValidUrl(url) {
+      return url.startsWith('http://') || url.startsWith('https://');
+    }
+
+    document.getElementById('add-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      clearError();
+
+      const urlInput = document.getElementById('url-input');
+      const titleInput = document.getElementById('title-input');
+      const noteInput = document.getElementById('note-input');
+      const tagsInput = document.getElementById('tags-input');
+
+      const url = urlInput.value.trim();
+      const title = titleInput.value.trim();
+      const note = noteInput.value.trim();
+      const tags = tagsInput.value
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+
+      if (!title) {
+        showError('Title cannot be empty.');
+        return;
+      }
+
+      if (!isValidUrl(url)) {
+        showError('URL must start with http:// or https://');
+        return;
+      }
+
+      const bookmarks = loadBookmarks();
+      bookmarks.push({
+        id: Date.now().toString(),
+        url,
+        title,
+        note,
+        tags,
+        createdAt: Date.now(),
+      });
+      saveBookmarks(bookmarks);
+
+      urlInput.value = '';
+      titleInput.value = '';
+      noteInput.value = '';
+      tagsInput.value = '';
+      closeAddForm();
+      render();
+    });
+
+    function openAddForm() {
+      document.getElementById('add-form').hidden = false;
+      document.getElementById('form-toggle').hidden = true;
+      document.getElementById('url-input').focus();
+    }
+
+    function closeAddForm() {
+      document.getElementById('add-form').hidden = true;
+      document.getElementById('form-toggle').hidden = false;
+      clearError();
+    }
+
+    document.getElementById('form-toggle').addEventListener('click', openAddForm);
+    document.getElementById('form-cancel').addEventListener('click', () => {
+      // Clear the form on cancel so it's fresh next time
+      document.getElementById('url-input').value = '';
+      document.getElementById('title-input').value = '';
+      document.getElementById('note-input').value = '';
+      document.getElementById('tags-input').value = '';
+      closeAddForm();
+    });
+
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      searchQuery = e.target.value.trim();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
