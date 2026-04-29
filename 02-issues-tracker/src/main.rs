@@ -1,15 +1,21 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
+use fs2::FileExt;
+use is_terminal::IsTerminal;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const STORAGE_PATH: &str = "tracker.json";
+const LOCK_PATH: &str = "tracker.json.lock";
+const TMP_PATH: &str = "tracker.json.tmp";
+const SCHEMA_VERSION: u32 = 1;
 
 // ANSI color escape codes
 const RED: &str = "\x1b[31m";
@@ -20,9 +26,25 @@ const CYAN: &str = "\x1b[36m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
+// Set once at the top of main() based on --no-color, NO_COLOR env, and isatty.
+static USE_COLOR: AtomicBool = AtomicBool::new(true);
+
+fn use_color() -> bool {
+    USE_COLOR.load(Ordering::Relaxed)
+}
+
+fn paint(code: &str, text: &str) -> String {
+    if use_color() {
+        format!("{}{}{}", code, text, RESET)
+    } else {
+        text.to_string()
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "tracker",
+    version,
     about = "A personal issue tracker CLI",
     long_about = "A personal issue tracker CLI. Tracks tasks in a local JSON file in \
                   the current directory. Issues have a status (open/in-progress/done), \
@@ -34,6 +56,10 @@ const RESET: &str = "\x1b[0m";
                   tracker show 1"
 )]
 struct Cli {
+    /// Disable ANSI colors in output (also respects NO_COLOR and non-tty stdout)
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -121,28 +147,28 @@ impl Status {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 enum Priority {
-    // Order matters: derived Ord uses declaration order, so Low < Medium < High.
-    // We use Reverse() when sorting so High appears first.
     Low,
     Medium,
     High,
 }
 
 impl Priority {
-    fn colored_label(self) -> String {
-        match self {
-            Priority::High => format!("{}high{}", RED, RESET),
-            Priority::Medium => format!("{}med{}", YELLOW, RESET),
-            Priority::Low => format!("{}low{}", DIM, RESET),
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Priority::High => "high",
             Priority::Medium => "medium",
             Priority::Low => "low",
         }
+    }
+
+    /// Returns the priority label, painted with its color when colors are enabled.
+    fn colored_label(self) -> String {
+        let code = match self {
+            Priority::High => RED,
+            Priority::Medium => YELLOW,
+            Priority::Low => DIM,
+        };
+        paint(code, self.label())
     }
 }
 
@@ -176,42 +202,140 @@ fn default_now() -> DateTime<Utc> {
     Utc::now()
 }
 
+/// Storage envelope. Wraps the bookkeeping (schema_version, next_id) around the
+/// issue list so we don't have to derive ids from current state on every create.
+#[derive(Serialize, Deserialize, Debug)]
+struct Storage {
+    schema_version: u32,
+    next_id: u32,
+    issues: Vec<Issue>,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Storage {
+            schema_version: SCHEMA_VERSION,
+            next_id: 1,
+            issues: Vec::new(),
+        }
+    }
+}
+
+/// Strip ANSI escape sequences and ASCII control characters (except tab) from
+/// a user-supplied string. Defends against ANSI escape injection in titles and
+/// notes that would otherwise be re-emitted on every list call. Strips the
+/// full escape sequence (e.g. "\x1b[31m") rather than just the ESC byte, which
+/// would leave the visible "[31m" remnant.
+fn sanitize_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip the full CSI sequence: ESC [ ... <final byte 0x40-0x7E>
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // Also handle simple ESC + single-char escapes by skipping one more.
+            // (Less common; the CSI branch above covers SGR, which is what
+            // actually shows up in colored output.)
+            continue;
+        }
+        if c.is_control() && c != '\t' {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Normalize labels: trim, lowercase, drop empties, dedupe. Stable ordering via BTreeSet.
 fn normalize_labels(input: Vec<String>) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for raw in input {
         let cleaned = raw.trim().to_lowercase();
-        if !cleaned.is_empty() {
-            set.insert(cleaned);
+        let sanitized = sanitize_text(&cleaned);
+        if !sanitized.is_empty() {
+            set.insert(sanitized);
         }
     }
     set.into_iter().collect()
 }
 
-fn load_issues() -> Result<Vec<Issue>> {
+/// Acquire an advisory exclusive file lock that lives for the whole command.
+/// Created via a sidecar `.lock` file so we never conflict with the
+/// write-then-rename happening on the data file.
+fn acquire_lock() -> Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(LOCK_PATH)
+        .with_context(|| format!("opening lock file {}", LOCK_PATH))?;
+    file.lock_exclusive()
+        .context("acquiring exclusive lock on tracker (another tracker process may be running)")?;
+    Ok(file)
+}
+
+fn load_storage() -> Result<Storage> {
     if !Path::new(STORAGE_PATH).exists() {
-        return Ok(Vec::new());
+        return Ok(Storage::default());
     }
     let raw = fs::read_to_string(STORAGE_PATH)
         .with_context(|| format!("reading {}", STORAGE_PATH))?;
     if raw.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(Storage::default());
     }
-    let issues: Vec<Issue> = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {} (file may be corrupted)", STORAGE_PATH))?;
-    Ok(issues)
+
+    // Try the modern envelope shape first.
+    if let Ok(storage) = serde_json::from_str::<Storage>(&raw) {
+        return Ok(storage);
+    }
+
+    // Fall back to the legacy flat-array shape (pre-round-1 storage format).
+    // Migrate forward by computing next_id from the max existing id + 1, which
+    // matches the legacy behavior on first load. After this load, future writes
+    // use the envelope and stable next_id.
+    if let Ok(legacy_issues) = serde_json::from_str::<Vec<Issue>>(&raw) {
+        let next_id = legacy_issues.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        return Ok(Storage {
+            schema_version: SCHEMA_VERSION,
+            next_id,
+            issues: legacy_issues,
+        });
+    }
+
+    Err(anyhow!(
+        "could not parse {}. The file may be corrupted. \
+         Back up tracker.json and delete it to start fresh.",
+        STORAGE_PATH
+    ))
 }
 
-fn save_issues(issues: &[Issue]) -> Result<()> {
-    let json = serde_json::to_string_pretty(issues)
-        .context("serializing issues")?;
-    fs::write(STORAGE_PATH, json)
-        .with_context(|| format!("writing {}", STORAGE_PATH))?;
+/// Atomic save: write to a temp file, fsync, then rename over the target.
+/// rename(2) is atomic on POSIX, so a kill between truncate and write can never
+/// leave the tracker file half-written.
+fn save_storage(storage: &Storage) -> Result<()> {
+    let json = serde_json::to_string_pretty(storage)
+        .context("serializing storage")?;
+
+    {
+        let mut tmp = File::create(TMP_PATH)
+            .with_context(|| format!("creating {}", TMP_PATH))?;
+        tmp.write_all(json.as_bytes())
+            .with_context(|| format!("writing {}", TMP_PATH))?;
+        tmp.sync_all()
+            .with_context(|| format!("syncing {}", TMP_PATH))?;
+    }
+
+    fs::rename(TMP_PATH, STORAGE_PATH)
+        .with_context(|| format!("renaming {} to {}", TMP_PATH, STORAGE_PATH))?;
     Ok(())
-}
-
-fn next_id(issues: &[Issue]) -> u32 {
-    issues.iter().map(|i| i.id).max().unwrap_or(0) + 1
 }
 
 /// Prompt the user with the given message and return true if they answer y/yes.
@@ -230,11 +354,19 @@ fn cmd_create(
     description: Option<String>,
     labels: Vec<String>,
 ) -> Result<()> {
-    if title.trim().is_empty() {
+    let title = sanitize_text(title.trim());
+    if title.is_empty() {
         return Err(anyhow!("title cannot be empty"));
     }
-    let mut issues = load_issues()?;
-    let id = next_id(&issues);
+    let description = description.map(|d| sanitize_text(d.trim()));
+
+    let mut storage = load_storage()?;
+    let id = storage.next_id;
+    storage.next_id = storage
+        .next_id
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("ran out of issue ids"))?;
+
     let now = Utc::now();
     let issue = Issue {
         id,
@@ -246,12 +378,16 @@ fn cmd_create(
         created_at: now,
         updated_at: now,
     };
+
+    let title_for_print = issue.title.clone();
+    storage.issues.push(issue);
+    save_storage(&storage)?;
     println!(
-        "{}Created{} issue #{}: {}",
-        GREEN, RESET, issue.id, issue.title
+        "{} issue #{}: {}",
+        paint(GREEN, "Created"),
+        id,
+        title_for_print
     );
-    issues.push(issue);
-    save_issues(&issues)?;
     Ok(())
 }
 
@@ -260,13 +396,13 @@ fn cmd_list(
     priority_filter: Option<Priority>,
     label_filter: Option<String>,
 ) -> Result<()> {
-    let issues = load_issues()?;
+    let storage = load_storage()?;
 
-    // Default status filter is Open if none specified (preserves layer 2 default).
     let effective_status = status_filter.unwrap_or(Status::Open);
     let normalized_label = label_filter.as_ref().map(|s| s.trim().to_lowercase());
 
-    let mut matches: Vec<&Issue> = issues
+    let mut matches: Vec<&Issue> = storage
+        .issues
         .iter()
         .filter(|i| i.status == effective_status)
         .filter(|i| match priority_filter {
@@ -282,18 +418,13 @@ fn cmd_list(
     matches.sort_by_key(|i| (Reverse(i.priority), i.id));
 
     if matches.is_empty() {
-        if issues.is_empty() {
+        if storage.issues.is_empty() {
             println!("No issues yet. Create one with:");
             println!("  tracker create \"your first issue\"");
         } else {
-            // Specialize the empty state when filtering for open issues with no other filters
-            // — this is the most common "everything is done" case.
             let no_other_filters = priority_filter.is_none() && normalized_label.is_none();
             if effective_status == Status::Open && no_other_filters {
-                println!(
-                    "No open issues. {}Nice work!{} 🎉",
-                    GREEN, RESET
-                );
+                println!("No open issues. {} 🎉", paint(GREEN, "Nice work!"));
             } else {
                 let mut parts = vec![format!("status={}", effective_status.label())];
                 if let Some(p) = priority_filter {
@@ -312,17 +443,13 @@ fn cmd_list(
         let labels_str = if issue.labels.is_empty() {
             String::new()
         } else {
-            format!(
-                " {}{}{}",
-                CYAN,
-                issue
-                    .labels
-                    .iter()
-                    .map(|l| format!("#{}", l))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                RESET,
-            )
+            let tags = issue
+                .labels
+                .iter()
+                .map(|l| format!("#{}", l))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(" {}", paint(CYAN, &tags))
         };
         println!(
             "#{:<4} [{}] [{}] {}{}",
@@ -337,13 +464,16 @@ fn cmd_list(
 }
 
 fn cmd_show(id: u32) -> Result<()> {
-    let issues = load_issues()?;
-    let issue = issues
+    let storage = load_storage()?;
+    let issue = storage
+        .issues
         .iter()
         .find(|i| i.id == id)
         .ok_or_else(|| anyhow!("no issue with id #{}", id))?;
 
-    println!("{}#{}{}  {}{}{}", BOLD, issue.id, RESET, BOLD, issue.title, RESET);
+    let id_str = format!("#{}", issue.id);
+    let title_str = issue.title.clone();
+    println!("{}  {}", paint(BOLD, &id_str), paint(BOLD, &title_str));
     println!("  status:     [{}]", issue.status.label());
     println!("  priority:   [{}]", issue.priority.colored_label());
     if !issue.labels.is_empty() {
@@ -353,9 +483,9 @@ fn cmd_show(id: u32) -> Result<()> {
             .map(|l| format!("#{}", l))
             .collect::<Vec<_>>()
             .join(" ");
-        println!("  labels:     {}{}{}", CYAN, tags, RESET);
+        println!("  labels:     {}", paint(CYAN, &tags));
     } else {
-        println!("  labels:     {}none{}", DIM, RESET);
+        println!("  labels:     {}", paint(DIM, "none"));
     }
     println!(
         "  created:    {}",
@@ -367,57 +497,84 @@ fn cmd_show(id: u32) -> Result<()> {
     );
     if let Some(desc) = &issue.description {
         println!();
+        println!("{}", paint(DIM, "--- description ---"));
         println!("{}", desc);
     }
     Ok(())
 }
 
 fn cmd_status(id: u32, new_status: Status) -> Result<()> {
-    let mut issues = load_issues()?;
-    let issue = issues
+    let mut storage = load_storage()?;
+    let issue = storage
+        .issues
         .iter_mut()
         .find(|i| i.id == id)
         .ok_or_else(|| anyhow!("no issue with id #{}", id))?;
+
+    if issue.status == new_status {
+        println!(
+            "Issue #{} is already {}. No change.",
+            id,
+            new_status.label()
+        );
+        return Ok(());
+    }
+
     let old_status = issue.status;
     issue.status = new_status;
     issue.updated_at = Utc::now();
+    save_storage(&storage)?;
     println!(
-        "{}Updated{} issue #{}: {} -> {}",
-        GREEN,
-        RESET,
+        "{} issue #{}: {} -> {}",
+        paint(GREEN, "Updated"),
         id,
         old_status.label(),
         new_status.label()
     );
-    save_issues(&issues)?;
     Ok(())
 }
 
 fn cmd_delete(id: u32) -> Result<()> {
-    let mut issues = load_issues()?;
-    let pos = issues
+    let mut storage = load_storage()?;
+    let pos = storage
+        .issues
         .iter()
         .position(|i| i.id == id)
         .ok_or_else(|| anyhow!("no issue with id #{}", id))?;
 
-    let title = issues[pos].title.clone();
-    let prompt = format!(
-        "Delete issue #{}: {}{}{}?",
-        id, BOLD, title, RESET
-    );
+    let title = storage.issues[pos].title.clone();
+    let prompt = format!("Delete issue #{}: {}?", id, paint(BOLD, &title));
     if !confirm(&prompt)? {
         println!("Cancelled.");
         return Ok(());
     }
 
-    issues.remove(pos);
-    save_issues(&issues)?;
-    println!("{}Deleted{} issue #{}.", GREEN, RESET, id);
+    storage.issues.remove(pos);
+    save_storage(&storage)?;
+    println!("{} issue #{}.", paint(GREEN, "Deleted"), id);
     Ok(())
+}
+
+/// Decide whether to emit ANSI colors. Honors --no-color, the NO_COLOR env var
+/// (https://no-color.org/), and falls back to isatty(stdout).
+fn determine_color(no_color_flag: bool) -> bool {
+    if no_color_flag {
+        return false;
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
 }
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    USE_COLOR.store(determine_color(cli.no_color), Ordering::Relaxed);
+
+    // Hold an exclusive advisory lock for the duration of the command. This
+    // prevents concurrent tracker invocations from clobbering each other.
+    let _lock = acquire_lock()?;
+
     match cli.command {
         Command::Create {
             title,
@@ -440,10 +597,12 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // Custom error printer: red label, then the chain of contexts.
-            eprintln!("{}error:{} {}", RED, RESET, e);
+            // Color the "error:" label red unless colors are disabled. We
+            // determine color *before* parsing if possible; if parsing failed,
+            // we already exited via clap's own machinery.
+            eprintln!("{} {}", paint(RED, "error:"), e);
             for cause in e.chain().skip(1) {
-                eprintln!("  {}caused by:{} {}", DIM, RESET, cause);
+                eprintln!("  {} {}", paint(DIM, "caused by:"), cause);
             }
             ExitCode::FAILURE
         }
