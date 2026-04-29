@@ -162,3 +162,28 @@ All addressed in commits below.
 ## Acknowledged but deferred (already in scope discussion)
 - #1, #2, #6, #9, #12, #13, #15, #29, #30, #31, #32, #33, #36, #37, #39: see above; v1.1 candidates.
 - #38, #40: out of scope for phase 2.
+
+# Review 3
+
+Round 3 was triaged against an explicit stopping rule: continue if valid finds ≥ reaches, stop otherwise. Round 3 returned 73 findings — higher than round 2's 44 — but only 4 met the "genuine bug worth fixing" bar, with ~50 reaches/invalid. The valid:reach ratio is the exit signal per chapter 02-the-methodology/01-how-we-build.md ("the harshest possible critic has run out of legitimate complaints"). Stopping after addressing the four genuine finds.
+
+## Genuine new finds Round 2 missed
+- #5: `Storage::schema_version` was deserialized but never enforced. A future tracker writing schema 2 with an incompatible shape would silently deserialize as garbage. Now refused with a clear "upgrade tracker" message.
+- #7: `next_id` collision possible if a corrupted or hand-edited storage file has `next_id ≤ max(existing ids)`. Defense-in-depth: load_storage now ensures `next_id > max_id` after parse.
+- #26: no way to list issues across all statuses. Real one-line gap deferred twice in earlier rounds. Added a StatusFilter enum with an "all" sentinel; storage-level Status stays clean.
+- #39: --label filter on `tracker list` only accepted a single value, asymmetric with --label on `tracker create`. Now repeatable with AND semantics.
+
+All addressed in commits below.
+
+## Reaches and invalid
+Round 3 raised 73 findings, of which the bulk fall into one of these patterns:
+
+- Already-deferred items the prior rounds explicitly triaged: length caps (#16-19), edit/add/remove labels post-creation (#34-37), --yes flag (#30), stdin TTY check (#31), file permissions (#71-72), no tests (#69), no CI (#40 from round 2). The "deferred to v1.1" or "out of scope for chapter 02" rationales from rounds 1 and 2 still apply; revisiting them here doesn't change the answer.
+- Style or polish: visual rhythm of brackets and color (#41-43), description wrapping (#28), label syntax `#` vs `@` (#35 from round 2), color allocation perf (#50). Not bugs.
+- Edge-case sanitizer concerns: bounded escape consumption (#13-14), `--` as title (#24), commas in labels (#23). Real but obscure for a personal tool.
+- Adversary-side errors: README claimed missing (#63), Cargo.lock claimed missing (#60), process log claimed to be the bookmark manager's (#70). All present and correct in the repo; the adversary appears to have lost or misread the artifacts.
+
+The full triage is not enumerated in this section because the cost of itemizing 70 reaches outweighs the value. The pattern is captured above.
+
+## Methodology note
+Three adversarial rounds was deliberate. Round 1 found 12 valid out of 52 (23%). Round 2 found 10 valid out of 44 (23%). Round 3 found 4 valid out of 73 (~5%). The drop in valid-find rate combined with the rise in absolute count is the curve expected when consulting chapter 02. Stopping here.
