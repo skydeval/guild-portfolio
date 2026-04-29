@@ -108,3 +108,57 @@ All addressed in commits below.
 - #48: "What I learned" conflates lessons. disagree — the two paragraphs are different angles on the same point: the technical problem (drift) and the meta-pattern (phase 2's role in the curriculum).
 - #50: "custom error" is an overstatement of "custom error printer". semantic nitpick.
 - #52: path traversal on configurable storage path. depends on #17 which is deferred.
+
+# Review 2
+
+## Genuine new finds Round 1 missed
+- #4: `sanitize_text` only handles CSI escapes (ESC [). OSC sequences (ESC ]) bypass and re-emit on every list. Also strips `\n`, breaking multi-line descriptions, which contradicts the design doc's "longer description."
+- #5: `sanitize_text(input.trim())` is the wrong order — trimming before sanitizing leaves inner whitespace if a leading control char surrounds it. Sanitize first, trim second.
+- #7: `cmd_list` lowercases the label filter input but doesn't run it through `sanitize_text`. Asymmetric with creation, so certain filter inputs would never match stored labels.
+- #11: `save_storage` leaks `tracker.json.tmp` if `fs::rename` fails. Add explicit cleanup on error.
+- #18: stderr ANSI is gated by `stdout().is_terminal()`. Wrong — error output should be gated by stderr's own TTY status. Redirecting stderr to a file with stdout still on the TTY produces escape codes in the log.
+- #27 + #28: Known Issues list still mentioned NO_COLOR support and id reuse, both fixed in Round 1.
+- #34: "Nice work! 🎉" reads as condescending in the wrong context (e.g., a project you just inherited that has zero issues). Soften.
+
+All addressed in commits below.
+
+## Partial — noted, partly addressed
+- #22: Round 1 #50 marked "custom error" overstatement as a nitpick. Fair point on a re-read. Updating the wording in PROCESS.md from "custom error printer" implications to the literal "match arm in main".
+- #41: Round 1's "Marked invalid" rationales were tonal as much as substantive. Re-read with intent to engage rather than dismiss.
+
+## Marked invalid
+- #1: `fs2` is unmaintained but functions correctly; `fs4` or std::File::lock is a refactor, not a bug fix. Bookmark for v1.1.
+- #2: lock file pollution per directory. Already in `.gitignore`; README notes it. Adversary wants more docs; partial in spirit but no behavior change.
+- #3: silent lock blocking. Real but rare in single-user practice; a `try_lock_exclusive` first with a "waiting…" message is polish, not bug-fix.
+- #6: `to_lowercase` Unicode order-of-ops. The actual policy decision is "do we accept non-ASCII labels at all?" Design doc doesn't restrict; current behavior is consistent if not perfect. Defer.
+- #8: `Status` missing Ord derive. Still future-feature, still not a current bug.
+- #9: enum-order-of-declaration coupling on Priority. `debug_assert!` is free; not blocking. Defer.
+- #10: fsync the parent directory. Adversary admits "nearly impossible to hit for a personal tool."
+- #12: legacy migration silently rewrites. Could add a print, but the migration is one-time and the user notices their data is intact. Trivial UX, not a bug.
+- #13: legacy migration doesn't validate id uniqueness. Real edge case for hand-edited or corrupted legacy files. Defer.
+- #14: u32 overflow message half-measure. Adversary's right that it's awkward; will let it panic and remove the check, or simply leave as-is. Not blocking.
+- #15: legacy timestamps lie via Utc::now() default. `Option<DateTime>` migration is bigger than the round-2 budget for a fix that affects only pre-round-1 data.
+- #16: cmd_status no-op audit narrative critique. No actual bug.
+- #17: re-opens #4. Counted once.
+- #19: confirms Round 1 fix landed. Not a finding.
+- #20 + #44: version still 0.1.0 after seven layers. Versioning policy is a writeup question, not a bug. Will document the policy.
+- #21, #24, #25: paste-version errors on the adversary's side. README exists, Cargo.lock is committed, DESIGN.md says "current directory." Adversary did not see the actual files.
+- #23: missing Cargo.toml metadata (description, license, repository, authors). `cargo publish` constraint doesn't apply; not publishing.
+- #26: design doc doesn't reflect envelope/lock/tmp implementation choices. Real point. Defer to a v1.1 doc pass.
+- #29: stdin TTY check in confirm. Real edge case but the safe-cancel default is fine; adversary's own admission.
+- #30: `--status all` deferred. One-line fix; legitimately small. Could add. Will add if there's appetite; otherwise v1.1.
+- #31: error context lacks absolute path. Stylistic. "reading tracker.json" is comprehensible.
+- #32: `tracker labels` command to discover existing labels. Feature request, not a bug. Defer to v1.1.
+- #33: SIGPIPE panic on `tracker list | head`. Real Rust gotcha but obscure for a personal tool. Defer.
+- #35: `#label` looks like Markdown header. Stylistic. Invalid.
+- #36: chmod 600 on storage. Adversary's right the fix is small. The threat-model decision is "should this be the default?" — leaning no for portability across filesystems that don't honor mode bits. Defer.
+- #37: undo/archive for delete. Combined with edit, a v1.1 concern; deferred.
+- #38: bump to edition 2024. Stylistic.
+- #39: clippy/rustfmt config. Valid portfolio polish; defer.
+- #40: CI config. Chapter 03 territory.
+- #42: invalid:valid ratio (24:10) interpretation. Round 1's adversary did over-claim; partial fault on both sides. The ratio in Round 2 is similar.
+- #43: "chainlink" name-drop without context for portfolio audience. Adding a one-line clarifier in PROCESS.md.
+
+## Acknowledged but deferred (already in scope discussion)
+- #1, #2, #6, #9, #12, #13, #15, #29, #30, #31, #32, #33, #36, #37, #39: see above; v1.1 candidates.
+- #38, #40: out of scope for phase 2.
