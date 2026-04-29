@@ -27,14 +27,29 @@ const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
 // Set once at the top of main() based on --no-color, NO_COLOR env, and isatty.
-static USE_COLOR: AtomicBool = AtomicBool::new(true);
+// Stdout and stderr are checked independently so redirecting one without the
+// other doesn't leak ANSI codes into the redirected stream.
+static USE_COLOR_STDOUT: AtomicBool = AtomicBool::new(true);
+static USE_COLOR_STDERR: AtomicBool = AtomicBool::new(true);
 
 fn use_color() -> bool {
-    USE_COLOR.load(Ordering::Relaxed)
+    USE_COLOR_STDOUT.load(Ordering::Relaxed)
+}
+
+fn use_color_stderr() -> bool {
+    USE_COLOR_STDERR.load(Ordering::Relaxed)
 }
 
 fn paint(code: &str, text: &str) -> String {
     if use_color() {
+        format!("{}{}{}", code, text, RESET)
+    } else {
+        text.to_string()
+    }
+}
+
+fn paint_stderr(code: &str, text: &str) -> String {
+    if use_color_stderr() {
         format!("{}{}{}", code, text, RESET)
     } else {
         text.to_string()
@@ -221,32 +236,78 @@ impl Default for Storage {
     }
 }
 
-/// Strip ANSI escape sequences and ASCII control characters (except tab) from
-/// a user-supplied string. Defends against ANSI escape injection in titles and
-/// notes that would otherwise be re-emitted on every list call. Strips the
-/// full escape sequence (e.g. "\x1b[31m") rather than just the ESC byte, which
-/// would leave the visible "[31m" remnant.
-fn sanitize_text(s: &str) -> String {
+/// Strip ANSI escape sequences and ASCII control characters from a
+/// user-supplied string. Defends against escape injection that would otherwise
+/// be re-emitted on every list call. Strips full sequences as units rather
+/// than just the leading ESC byte (which would leave visible "[31m" remnants).
+///
+/// Handles three escape families:
+///   - CSI: ESC [ ... <final byte 0x40-0x7E>     (used by SGR colors)
+///   - OSC: ESC ] ... <terminator BEL or ESC \>  (used by terminal title hacks)
+///   - DCS / SOS / PM / APC: ESC P/X/^/_ ... <ST: ESC \>
+///
+/// If `allow_newlines` is true, `\n` and `\r` are preserved (descriptions
+/// support multi-line prose). Otherwise they're stripped along with other
+/// control bytes (titles and labels are single-line).
+fn sanitize_text(s: &str, allow_newlines: bool) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // Skip the full CSI sequence: ESC [ ... <final byte 0x40-0x7E>
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
+            match chars.peek() {
+                // CSI: skip up to and including a final byte in 0x40-0x7E.
+                Some(&'[') => {
                     chars.next();
-                    if ('@'..='~').contains(&next) {
-                        break;
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
                     }
                 }
+                // OSC: skip until BEL (0x07) or ESC \ (ST). Worst case, drop to EOF.
+                Some(&']') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\x07' {
+                            break;
+                        }
+                        if next == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // DCS, SOS, PM, APC: skip until ST (ESC \).
+                Some(&'P') | Some(&'X') | Some(&'^') | Some(&'_') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Any other escape — drop the ESC and one following char (Fp/Fe/Fs).
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
             }
-            // Also handle simple ESC + single-char escapes by skipping one more.
-            // (Less common; the CSI branch above covers SGR, which is what
-            // actually shows up in colored output.)
             continue;
         }
-        if c.is_control() && c != '\t' {
+        // Strip control chars; allow tab and (optionally) newlines through.
+        if c.is_control() {
+            if c == '\t' {
+                out.push(c);
+                continue;
+            }
+            if allow_newlines && (c == '\n' || c == '\r') {
+                out.push(c);
+                continue;
+            }
             continue;
         }
         out.push(c);
@@ -254,17 +315,26 @@ fn sanitize_text(s: &str) -> String {
     out
 }
 
-/// Normalize labels: trim, lowercase, drop empties, dedupe. Stable ordering via BTreeSet.
+/// Normalize labels: sanitize, trim, lowercase, drop empties, dedupe. Stable
+/// ordering via BTreeSet. Sanitize runs before trim so leading control chars
+/// don't preserve their adjacent whitespace.
 fn normalize_labels(input: Vec<String>) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for raw in input {
-        let cleaned = raw.trim().to_lowercase();
-        let sanitized = sanitize_text(&cleaned);
-        if !sanitized.is_empty() {
-            set.insert(sanitized);
+        let sanitized = sanitize_text(&raw, false);
+        let cleaned = sanitized.trim().to_lowercase();
+        if !cleaned.is_empty() {
+            set.insert(cleaned);
         }
     }
     set.into_iter().collect()
+}
+
+/// Same normalization the create path applies, exposed so the list filter can
+/// be symmetric. Round 2 #7: filter input previously only lowercased.
+fn normalize_label_for_filter(raw: &str) -> String {
+    let sanitized = sanitize_text(raw, false);
+    sanitized.trim().to_lowercase()
 }
 
 /// Acquire an advisory exclusive file lock that lives for the whole command.
@@ -333,8 +403,12 @@ fn save_storage(storage: &Storage) -> Result<()> {
             .with_context(|| format!("syncing {}", TMP_PATH))?;
     }
 
-    fs::rename(TMP_PATH, STORAGE_PATH)
-        .with_context(|| format!("renaming {} to {}", TMP_PATH, STORAGE_PATH))?;
+    if let Err(e) = fs::rename(TMP_PATH, STORAGE_PATH) {
+        // Clean up the tmp file so a rename failure doesn't leave debris.
+        // Best-effort; if cleanup fails too, the original error is more useful.
+        let _ = fs::remove_file(TMP_PATH);
+        return Err(e).with_context(|| format!("renaming {} to {}", TMP_PATH, STORAGE_PATH));
+    }
     Ok(())
 }
 
@@ -354,11 +428,15 @@ fn cmd_create(
     description: Option<String>,
     labels: Vec<String>,
 ) -> Result<()> {
-    let title = sanitize_text(title.trim());
+    let title = sanitize_text(&title, false);
+    let title = title.trim().to_string();
     if title.is_empty() {
         return Err(anyhow!("title cannot be empty"));
     }
-    let description = description.map(|d| sanitize_text(d.trim()));
+    let description = description.map(|d| {
+        let cleaned = sanitize_text(&d, true);
+        cleaned.trim().to_string()
+    });
 
     let mut storage = load_storage()?;
     let id = storage.next_id;
@@ -399,7 +477,7 @@ fn cmd_list(
     let storage = load_storage()?;
 
     let effective_status = status_filter.unwrap_or(Status::Open);
-    let normalized_label = label_filter.as_ref().map(|s| s.trim().to_lowercase());
+    let normalized_label = label_filter.as_ref().map(|s| normalize_label_for_filter(s));
 
     let mut matches: Vec<&Issue> = storage
         .issues
@@ -424,7 +502,7 @@ fn cmd_list(
         } else {
             let no_other_filters = priority_filter.is_none() && normalized_label.is_none();
             if effective_status == Status::Open && no_other_filters {
-                println!("No open issues. {} 🎉", paint(GREEN, "Nice work!"));
+                println!("No open issues.");
             } else {
                 let mut parts = vec![format!("status={}", effective_status.label())];
                 if let Some(p) = priority_filter {
@@ -555,21 +633,28 @@ fn cmd_delete(id: u32) -> Result<()> {
     Ok(())
 }
 
-/// Decide whether to emit ANSI colors. Honors --no-color, the NO_COLOR env var
-/// (https://no-color.org/), and falls back to isatty(stdout).
-fn determine_color(no_color_flag: bool) -> bool {
+/// Decide whether to emit ANSI colors on the given stream. Honors --no-color,
+/// the NO_COLOR env var (https://no-color.org/), and the per-stream isatty.
+fn determine_color(no_color_flag: bool, stream_is_terminal: bool) -> bool {
     if no_color_flag {
         return false;
     }
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
-    std::io::stdout().is_terminal()
+    stream_is_terminal
 }
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    USE_COLOR.store(determine_color(cli.no_color), Ordering::Relaxed);
+    USE_COLOR_STDOUT.store(
+        determine_color(cli.no_color, std::io::stdout().is_terminal()),
+        Ordering::Relaxed,
+    );
+    USE_COLOR_STDERR.store(
+        determine_color(cli.no_color, std::io::stderr().is_terminal()),
+        Ordering::Relaxed,
+    );
 
     // Hold an exclusive advisory lock for the duration of the command. This
     // prevents concurrent tracker invocations from clobbering each other.
@@ -597,12 +682,12 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // Color the "error:" label red unless colors are disabled. We
-            // determine color *before* parsing if possible; if parsing failed,
-            // we already exited via clap's own machinery.
-            eprintln!("{} {}", paint(RED, "error:"), e);
+            // Color the "error:" label red unless stderr is being captured.
+            // Note this uses paint_stderr (not paint) so redirecting only
+            // stderr to a file doesn't leave ANSI codes in the log.
+            eprintln!("{} {}", paint_stderr(RED, "error:"), e);
             for cause in e.chain().skip(1) {
-                eprintln!("  {} {}", paint(DIM, "caused by:"), cause);
+                eprintln!("  {} {}", paint_stderr(DIM, "caused by:"), cause);
             }
             ExitCode::FAILURE
         }
