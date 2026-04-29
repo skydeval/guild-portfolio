@@ -105,19 +105,22 @@ enum Command {
                             Examples:\n  \
                             tracker list\n  \
                             tracker list --status done\n  \
+                            tracker list --status all\n  \
                             tracker list --priority high\n  \
                             tracker list --label bug\n  \
+                            tracker list --label bug --label backend\n  \
                             tracker list --status open --priority high --label backend")]
     List {
-        /// Filter by status (defaults to open)
+        /// Filter by status: open, in-progress, done, or all (defaults to open)
         #[arg(long)]
-        status: Option<Status>,
+        status: Option<StatusFilter>,
         /// Filter by priority
         #[arg(long)]
         priority: Option<Priority>,
-        /// Filter to issues that have this label
-        #[arg(long)]
-        label: Option<String>,
+        /// Filter to issues that have this label. Pass --label multiple times
+        /// to require all listed labels (AND semantics, matching --label on create).
+        #[arg(long = "label")]
+        labels: Vec<String>,
     },
     /// Show full details of an issue
     Show {
@@ -155,6 +158,39 @@ impl Status {
             Status::Open => "open",
             Status::InProgress => "in-progress",
             Status::Done => "done",
+        }
+    }
+}
+
+/// Filter-only enum for `tracker list --status`. Wraps Status and adds an
+/// "all" sentinel so users can list every issue regardless of status. Kept
+/// separate from Status so the storage-level state type stays clean — "all"
+/// is a query concept, not a state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum StatusFilter {
+    Open,
+    InProgress,
+    Done,
+    All,
+}
+
+impl StatusFilter {
+    fn matches(self, status: Status) -> bool {
+        match self {
+            StatusFilter::All => true,
+            StatusFilter::Open => status == Status::Open,
+            StatusFilter::InProgress => status == Status::InProgress,
+            StatusFilter::Done => status == Status::Done,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            StatusFilter::Open => "open",
+            StatusFilter::InProgress => "in-progress",
+            StatusFilter::Done => "done",
+            StatusFilter::All => "all",
         }
     }
 }
@@ -363,7 +399,25 @@ fn load_storage() -> Result<Storage> {
     }
 
     // Try the modern envelope shape first.
-    if let Ok(storage) = serde_json::from_str::<Storage>(&raw) {
+    if let Ok(mut storage) = serde_json::from_str::<Storage>(&raw) {
+        // Refuse to operate on files written by a future tracker. Without
+        // this, an old binary would silently deserialize garbage or lose data.
+        if storage.schema_version > SCHEMA_VERSION {
+            return Err(anyhow!(
+                "{} was written by a newer tracker (schema version {}). \
+                 This binary supports up to schema version {}. \
+                 Upgrade tracker or use a different file.",
+                STORAGE_PATH,
+                storage.schema_version,
+                SCHEMA_VERSION
+            ));
+        }
+        // Defense in depth against a hand-edited or corrupted next_id that
+        // would collide with an existing id.
+        let max_id = storage.issues.iter().map(|i| i.id).max().unwrap_or(0);
+        if storage.next_id <= max_id {
+            storage.next_id = max_id + 1;
+        }
         return Ok(storage);
     }
 
@@ -470,26 +524,32 @@ fn cmd_create(
 }
 
 fn cmd_list(
-    status_filter: Option<Status>,
+    status_filter: Option<StatusFilter>,
     priority_filter: Option<Priority>,
-    label_filter: Option<String>,
+    label_filters: Vec<String>,
 ) -> Result<()> {
     let storage = load_storage()?;
 
-    let effective_status = status_filter.unwrap_or(Status::Open);
-    let normalized_label = label_filter.as_ref().map(|s| normalize_label_for_filter(s));
+    let effective_status = status_filter.unwrap_or(StatusFilter::Open);
+    let normalized_labels: Vec<String> = label_filters
+        .iter()
+        .map(|s| normalize_label_for_filter(s))
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let mut matches: Vec<&Issue> = storage
         .issues
         .iter()
-        .filter(|i| i.status == effective_status)
+        .filter(|i| effective_status.matches(i.status))
         .filter(|i| match priority_filter {
             Some(p) => i.priority == p,
             None => true,
         })
-        .filter(|i| match &normalized_label {
-            Some(label) => i.labels.iter().any(|l| l == label),
-            None => true,
+        .filter(|i| {
+            // AND semantics: every requested label must be present on the issue.
+            normalized_labels
+                .iter()
+                .all(|requested| i.labels.iter().any(|l| l == requested))
         })
         .collect();
 
@@ -500,15 +560,16 @@ fn cmd_list(
             println!("No issues yet. Create one with:");
             println!("  tracker create \"your first issue\"");
         } else {
-            let no_other_filters = priority_filter.is_none() && normalized_label.is_none();
-            if effective_status == Status::Open && no_other_filters {
+            let no_other_filters =
+                priority_filter.is_none() && normalized_labels.is_empty();
+            if effective_status == StatusFilter::Open && no_other_filters {
                 println!("No open issues.");
             } else {
                 let mut parts = vec![format!("status={}", effective_status.label())];
                 if let Some(p) = priority_filter {
                     parts.push(format!("priority={}", p.label()));
                 }
-                if let Some(label) = &normalized_label {
+                for label in &normalized_labels {
                     parts.push(format!("label={}", label));
                 }
                 println!("No issues match: {}.", parts.join(", "));
@@ -670,8 +731,8 @@ fn run() -> Result<()> {
         Command::List {
             status,
             priority,
-            label,
-        } => cmd_list(status, priority, label),
+            labels,
+        } => cmd_list(status, priority, labels),
         Command::Show { id } => cmd_show(id),
         Command::Status { id, status } => cmd_status(id, status),
         Command::Delete { id } => cmd_delete(id),
